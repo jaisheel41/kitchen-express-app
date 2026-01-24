@@ -1,13 +1,18 @@
 "use client";
 
 import { useState, useEffect, useMemo } from "react";
+import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { searchCustomerByAddress, createOrder } from "./actions";
-import { Search, Plus, Minus, X } from "lucide-react";
+import { Search, Plus, Minus, X, Mic } from "lucide-react";
+import { VoiceInput } from "@/components/voice-input";
+import { VoiceItemsConfirm } from "@/components/voice-items-confirm";
+import { parseItemList } from "@/lib/item-parser";
+import { findBestMatch, findTopMatches } from "@/lib/fuzzy-match";
 
 type MenuItem = {
   id: string;
@@ -37,6 +42,8 @@ export function OrderForm({
   menuItems: MenuItem[];
   categories: Category[];
 }) {
+  const router = useRouter();
+  
   // Customer state
   const [customerPhone, setCustomerPhone] = useState("");
   const [customerName, setCustomerName] = useState("");
@@ -67,6 +74,18 @@ export function OrderForm({
 
   // Error state
   const [error, setError] = useState("");
+
+  // Voice input state
+  const [voiceItemText, setVoiceItemText] = useState("");
+  const [showVoiceConfirm, setShowVoiceConfirm] = useState(false);
+  const [parsedVoiceItems, setParsedVoiceItems] = useState<
+    Array<{
+      name: string;
+      quantity: number;
+      matched: MenuItem | null;
+      suggestions?: MenuItem[];
+    }>
+  >([]);
 
   // Group menu items by category
   const itemsByCategory = useMemo(() => {
@@ -192,6 +211,71 @@ export function OrderForm({
     setCart(cart.filter((_, i) => i !== index));
   };
 
+  // Handle voice input for items
+  const handleVoiceItems = (text: string) => {
+    setVoiceItemText(text);
+    const parsed = parseItemList(text);
+
+    // Match items to menu
+    const matchedItems = parsed.map((item) => {
+      const matched = findBestMatch(item.name, menuItems, 0.7);
+      const suggestions = matched
+        ? []
+        : findTopMatches(item.name, menuItems, 3).map((m) => m.item);
+
+      return {
+        name: item.name,
+        quantity: item.quantity,
+        matched,
+        suggestions: suggestions.length > 0 ? suggestions : undefined,
+      };
+    });
+
+    setParsedVoiceItems(matchedItems);
+    setShowVoiceConfirm(true);
+  };
+
+  // Handle confirmation of voice items
+  const handleConfirmVoiceItems = (
+    items: Array<{
+      menu_item_id: string | null;
+      item_name: string;
+      unit_price: number;
+      quantity: number;
+    }>
+  ) => {
+    // Add items to cart
+    items.forEach((item) => {
+      const existing = cart.find(
+        (cartItem) => cartItem.menu_item_id === item.menu_item_id,
+      );
+      if (existing) {
+        setCart(
+          cart.map((cartItem) =>
+            cartItem.menu_item_id === item.menu_item_id
+              ? { ...cartItem, quantity: cartItem.quantity + item.quantity }
+              : cartItem,
+          ),
+        );
+      } else {
+        setCart([
+          ...cart,
+          {
+            menu_item_id: item.menu_item_id,
+            item_name: item.item_name,
+            unit_price: item.unit_price,
+            quantity: item.quantity,
+            isCustom: !item.menu_item_id,
+          },
+        ]);
+      }
+    });
+
+    // Reset voice input
+    setVoiceItemText("");
+    setParsedVoiceItems([]);
+  };
+
   const addCustomItem = () => {
     if (!customItemName.trim()) {
       setError("Custom item name is required");
@@ -229,10 +313,6 @@ export function OrderForm({
     setError("");
 
     // Validation
-    if (!customerPhone.trim()) {
-      setError("Customer phone is required");
-      return;
-    }
     if (!customerName.trim()) {
       setError("Customer name is required");
       return;
@@ -268,27 +348,9 @@ export function OrderForm({
 
     if (result.error) {
       setError(result.error);
-    } else {
-      // Clear form on successful order creation
-      setCustomerAddress("");
-      setCustomerName("");
-      setCustomerPhone("");
-      setOrderType("asap");
-      setAsapMinutes(30);
-      setScheduledDate("");
-      setScheduledTime("");
-      setCart([]);
-      setItemSearch("");
-      setSelectedCategory(null);
-      setShowCustomItem(false);
-      setCustomItemName("");
-      setCustomItemPrice("");
-      setCustomItemQty(1);
-      setDeliveryFee("0");
-      setDiscount("0");
-      setNotes("");
-      setError("");
-      // Redirect happens in the action, but clear form just in case
+    } else if (result.data?.id) {
+      // Redirect to print page with autoprint
+      router.push(`/print/order/${result.data.id}?autoprint=1&return=/today`);
     }
   };
 
@@ -302,34 +364,51 @@ export function OrderForm({
         <CardContent className="space-y-4">
           <div className="space-y-2">
             <Label htmlFor="address">Address *</Label>
-            <div className="relative">
-              <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-              <Input
-                id="address"
-                type="text"
-                placeholder="Enter delivery address"
-                value={customerAddress}
-                onChange={(e) => setCustomerAddress(e.target.value)}
-                className="pl-10"
-                required
+            <div className="relative flex gap-2">
+              <div className="relative flex-1">
+                <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                <Input
+                  id="address"
+                  type="text"
+                  placeholder="Enter delivery address"
+                  value={customerAddress}
+                  onChange={(e) => setCustomerAddress(e.target.value)}
+                  className="pl-10"
+                  required
+                />
+                {isSearchingCustomer && (
+                  <span className="absolute right-3 top-1/2 transform -translate-y-1/2 text-xs text-muted-foreground">
+                    Searching...
+                  </span>
+                )}
+              </div>
+              <VoiceInput
+                onTranscript={(text) => setCustomerAddress(text)}
+                onError={(err) => setError(err)}
+                size="icon"
+                variant="outline"
               />
-              {isSearchingCustomer && (
-                <span className="absolute right-3 top-1/2 transform -translate-y-1/2 text-xs text-muted-foreground">
-                  Searching...
-                </span>
-              )}
             </div>
           </div>
           <div className="space-y-2">
             <Label htmlFor="name">Name *</Label>
-            <Input
-              id="name"
-              type="text"
-              placeholder="Customer name"
-              value={customerName}
-              onChange={(e) => setCustomerName(e.target.value)}
-              required
-            />
+            <div className="flex gap-2">
+              <Input
+                id="name"
+                type="text"
+                placeholder="Customer name"
+                value={customerName}
+                onChange={(e) => setCustomerName(e.target.value)}
+                className="flex-1"
+                required
+              />
+              <VoiceInput
+                onTranscript={(text) => setCustomerName(text)}
+                onError={(err) => setError(err)}
+                size="icon"
+                variant="outline"
+              />
+            </div>
           </div>
           <div className="space-y-2">
             <Label htmlFor="phone">Phone</Label>
@@ -457,6 +536,30 @@ export function OrderForm({
           <CardTitle>Items</CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
+          {/* Quick Voice Item Entry */}
+          <div className="space-y-2 p-4 bg-primary/5 rounded-lg border border-primary/20">
+            <Label className="text-sm font-medium flex items-center gap-2">
+              <Mic className="h-4 w-4" />
+              Quick Voice Entry
+            </Label>
+            <p className="text-xs text-muted-foreground mb-2">
+              Speak items like: "idli two, masala idli four, vada one"
+            </p>
+            <VoiceInput
+              onTranscript={handleVoiceItems}
+              onError={(err) => setError(err)}
+              size="lg"
+              variant="default"
+              className="w-full"
+            />
+            {voiceItemText && (
+              <div className="mt-2 p-2 bg-background rounded border text-sm text-muted-foreground">
+                <span className="font-medium">Heard: </span>
+                {voiceItemText}
+              </div>
+            )}
+          </div>
+
           {/* Category Filter */}
           <div className="flex flex-wrap gap-2">
             <Button
@@ -731,13 +834,31 @@ export function OrderForm({
           <CardTitle>Notes</CardTitle>
         </CardHeader>
         <CardContent>
-          <Input
-            placeholder="Special instructions or notes..."
-            value={notes}
-            onChange={(e) => setNotes(e.target.value)}
-          />
+          <div className="flex gap-2">
+            <Input
+              placeholder="Special instructions or notes..."
+              value={notes}
+              onChange={(e) => setNotes(e.target.value)}
+              className="flex-1"
+            />
+            <VoiceInput
+              onTranscript={(text) => setNotes(text)}
+              onError={(err) => setError(err)}
+              size="icon"
+              variant="outline"
+            />
+          </div>
         </CardContent>
       </Card>
+
+      {/* Voice Items Confirmation Dialog */}
+      <VoiceItemsConfirm
+        open={showVoiceConfirm}
+        onOpenChange={setShowVoiceConfirm}
+        parsedItems={parsedVoiceItems}
+        menuItems={menuItems}
+        onConfirm={handleConfirmVoiceItems}
+      />
 
       {/* Error Display */}
       {error && (

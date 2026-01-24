@@ -24,7 +24,7 @@ import {
   updateOrderItems,
   updateOrderDeliveryAndDiscount,
 } from "./actions";
-import { Edit, Plus, Minus, X } from "lucide-react";
+import { Edit, Plus, Minus, X, Printer } from "lucide-react";
 
 type OrderItem = {
   id: string;
@@ -368,6 +368,15 @@ export function OrderDetailClient({
               </div>
             </div>
             <div className="flex gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => window.open(`/print/order/${order.id}`, "_blank")}
+                className="flex items-center gap-2"
+              >
+                <Printer className="h-4 w-4" />
+                Print Receipt
+              </Button>
               <Dialog open={statusDialogOpen} onOpenChange={setStatusDialogOpen}>
                 <DialogTrigger asChild>
                   <Button variant="outline" size="sm">

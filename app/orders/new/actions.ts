@@ -274,6 +274,9 @@ export async function createOrder(
 
   revalidatePath("/orders");
   revalidatePath("/today");
-  redirect(`/orders/${order.id}`);
+  
+  // Return order ID instead of redirecting
+  // The client will handle redirect to print page
+  return { data: { id: order.id }, error: null };
 }
 
